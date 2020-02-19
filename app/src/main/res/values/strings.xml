@@ -1,0 +1,10 @@
+<resources>
+    <string name="app_name">ParkMe</string>
+    <string name="try_maps">Find Parking</string>
+    <string name="title_activity_google_maps">Map</string>
+    <string name="google_attr">Google Attribution</string>
+    <string name="coord_search">Search</string>
+    <string name="find_me">Find Me</string>
+    <string name="zoom_in">Zoom In</string>
+    <string name="zoom_out">Zoom Out</string>
+</resources>
