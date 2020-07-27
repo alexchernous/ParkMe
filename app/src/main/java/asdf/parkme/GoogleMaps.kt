@@ -2,33 +2,35 @@ package asdf.parkme
 
 import android.Manifest.permission.ACCESS_FINE_LOCATION
 import android.content.pm.PackageManager
+import android.graphics.Color
 import android.location.Location
 import android.os.Bundle
 import android.util.Log
 import android.view.View
-import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
+import com.fasterxml.jackson.module.kotlin.readValue
 import com.google.android.gms.common.api.ApiException
 import com.google.android.gms.common.api.Status
 import com.google.android.gms.location.FusedLocationProviderClient
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.maps.CameraUpdateFactory
 import com.google.android.gms.maps.GoogleMap
+import com.google.android.gms.maps.GoogleMap.OnMapClickListener
 import com.google.android.gms.maps.OnMapReadyCallback
 import com.google.android.gms.maps.SupportMapFragment
-import com.google.android.gms.maps.model.BitmapDescriptorFactory
-import com.google.android.gms.maps.model.LatLng
-import com.google.android.gms.maps.model.Marker
-import com.google.android.gms.maps.model.MarkerOptions
+import com.google.android.gms.maps.model.*
 import com.google.android.gms.tasks.Task
 import com.google.android.libraries.places.api.Places
 import com.google.android.libraries.places.api.model.Place
 import com.google.android.libraries.places.api.net.PlacesClient
 import com.google.android.libraries.places.widget.AutocompleteSupportFragment
 import com.google.android.libraries.places.widget.listener.PlaceSelectionListener
-import org.json.JSONObject
+import org.json.JSONException
+import java.io.IOException
+import java.io.InputStream
 
 
 class GoogleMaps : AppCompatActivity(), GoogleMap.OnMarkerClickListener,
@@ -37,6 +39,11 @@ class GoogleMaps : AppCompatActivity(), GoogleMap.OnMarkerClickListener,
     private lateinit var mMap: GoogleMap
     private lateinit var mMarker : Marker
     private var currentPos = LatLng(43.655353, -79.388364) //somewhere dt toronto
+    private val streetsFile = "TorontoParkingStreets.json"
+    private lateinit var streetMap: MutableMap<Any, MutableMap<Any, Any>>
+    private lateinit var streetObject: MutableMap<Any, Any>
+    private lateinit var parkingLine: Polyline
+    private var isMarkerClicked: Boolean = false
 
     private val TAG : String = "GoogleMaps"
 
@@ -47,9 +54,7 @@ class GoogleMaps : AppCompatActivity(), GoogleMap.OnMarkerClickListener,
     private var MY_PERMISSIONS_REQUEST_READ_CONTACTS : Int = 1
     private var currentZoom : Int = 0
     private val LOCATION_RESULT_ZOOM : Int = 15
-    private val ZOOM_INCREMENT : Int = 5
-
-    private var parkingStreet = JSONObject()
+    private val ZOOM_INCREMENT : Int = 2
 
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -62,19 +67,12 @@ class GoogleMaps : AppCompatActivity(), GoogleMap.OnMarkerClickListener,
         Places.initialize(this.applicationContext, resources.getString(R.string.google_maps_key))
         placesClient = Places.createClient(this)
 
-        parkingStreet.put("Street","Belgravia Avenue")
-        parkingStreet.put("Lat","43.698699549999995")
-        parkingStreet.put("Long","-79.443957249999995")
-        parkingStreet.put("Side","South")
-        parkingStreet.put("Between","Locksley Avenue & Marlee Avenue")
-        parkingStreet.put("Range","8:00 a.m. to 7:00 p.m.")
-        parkingStreet.put("Period","1 hour")
-
+        val streetsJSONString = loadJSONFromAsset(streetsFile)
+        streetMap = jacksonObjectMapper().readValue(streetsJSONString)
 
 
 
         mFusedLocationProviderClient = LocationServices.getFusedLocationProviderClient(this)
-
 
         // Initialize the AutocompleteSupportFragment.
         val autocompleteFragment = supportFragmentManager.findFragmentById(R.id.autocomplete_fragment) as AutocompleteSupportFragment?
@@ -100,28 +98,63 @@ class GoogleMaps : AppCompatActivity(), GoogleMap.OnMarkerClickListener,
         })
     }
 
-    private fun populateParkingStreets(){
-        val latlng = LatLng(parkingStreet["Lat"].toString().toDouble(), parkingStreet["Long"].toString().toDouble())
-        val title : String =
-            parkingStreet["Street"].toString()
+    private fun parseStreetMap(jsonMap: MutableMap<Any, MutableMap<Any, Any>>) {
+        val iter: MutableIterator<Any> = jsonMap.keys.iterator()
+        while (iter.hasNext()) {
+            val key = iter.next()
+            streetObject = jsonMap[key]!!
+            try {
+                if (streetObject["is_accurate"] == "true") {
+                    populateStreetMarker()
+                }
+            } catch (e: JSONException) {
+                Log.i(TAG, "Something went wrong!: $e")
+            }
+        }
+    }
+
+    private fun loadJSONFromAsset(file: String): String {
+        return try {
+            val istream: InputStream = assets.open(file)
+            val size: Int = istream.available()
+            val buffer = ByteArray(size)
+            istream.read(buffer)
+            istream.close()
+            String(buffer)
+        } catch (ex: IOException) {
+            ex.printStackTrace()
+            ""
+        }
+    }
+
+    private fun populateStreetMarker(){
+        val latlng = LatLng(streetObject["marker_lat"].toString().toDouble(), streetObject["marker_lng"].toString().toDouble())
 
         val snippet : String =
-            parkingStreet["Side"].toString() + "-side " +
-            parkingStreet["Range"].toString() + " " +
-            parkingStreet["Period"].toString()
+            streetObject["side"].toString() + "-side " +
+            streetObject["times_and_or_days"].toString() + " " +
+            streetObject["maximum_period_permitted"].toString()
 
         mMap.addMarker(
             MarkerOptions()
                 .position(latlng)
-                .title(title)
+                .title(streetObject["highway"].toString())
                 .snippet(snippet)
                 .draggable(false)
                 .icon(BitmapDescriptorFactory.defaultMarker(BitmapDescriptorFactory.HUE_GREEN))
         )
+
     }
 
     override fun onMapReady(googleMap: GoogleMap) {
         mMap = googleMap
+
+        mMap.setOnMapClickListener(object : OnMapClickListener {
+            override fun onMapClick (point: LatLng) {
+                parkingLine.remove()
+                isMarkerClicked = false
+            }
+        })
 
         updateLocationUI()
 
@@ -138,7 +171,7 @@ class GoogleMaps : AppCompatActivity(), GoogleMap.OnMarkerClickListener,
         mMap.setOnMarkerClickListener(this)
         mMap.setOnMarkerDragListener(this)
 
-        populateParkingStreets()
+        parseStreetMap(streetMap)
     }
 
     override fun onMarkerClick(marker: Marker): Boolean {
@@ -149,9 +182,23 @@ class GoogleMaps : AppCompatActivity(), GoogleMap.OnMarkerClickListener,
 //            marker.tag.toString(),
 //            Toast.LENGTH_SHORT
 //        ).show()
+        if(!isMarkerClicked &&
+            (streetObject["intersection_a_lat"] !is String) &&
+            (streetObject["intersection_b_lat"] !is String)){
+
+            parkingLine = mMap.addPolyline(PolylineOptions()
+                .add(LatLng(streetObject["intersection_a_lat"].toString().toDouble(), streetObject["intersection_a_lng"].toString().toDouble()),
+                    LatLng(streetObject["intersection_b_lat"].toString().toDouble(), streetObject["intersection_b_lng"].toString().toDouble()))
+                .width(5F)
+                .color(Color.GREEN))
+        }
+
+        isMarkerClicked = true
 
         return false
     }
+
+
 
     override fun onMarkerDragStart(p0: Marker) {
 //        mPos = p0.position
@@ -178,6 +225,7 @@ class GoogleMaps : AppCompatActivity(), GoogleMap.OnMarkerClickListener,
 
     private fun updateLocationUI(){
         if (mLocationPermissionGranted) {
+            // TODO: fix this
             mMap.isMyLocationEnabled = true
             mMap.uiSettings.isMyLocationButtonEnabled = true
         } else {
@@ -202,11 +250,7 @@ class GoogleMaps : AppCompatActivity(), GoogleMap.OnMarkerClickListener,
     }
 
     fun findMe(view : View){
-        if (ContextCompat.checkSelfPermission(
-                this,
-                ACCESS_FINE_LOCATION
-            ) == PackageManager.PERMISSION_GRANTED
-        ) {
+        if (ContextCompat.checkSelfPermission(this, ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
             val geoLocation: Task<Location?> = mFusedLocationProviderClient.lastLocation
 
             geoLocation.addOnCompleteListener { task: Task<Location?> ->
@@ -220,12 +264,11 @@ class GoogleMaps : AppCompatActivity(), GoogleMap.OnMarkerClickListener,
                     }
                 }
             }
-        } else { // A local method to request required permissions;
-                // See https://developer.android.com/training/permissions/requesting
+        } else {
+            // A local method to request required permissions;
+            // See https://developer.android.com/training/permissions/requesting
             getLocationPermission()
-
         }
-
     }
 
 //    fun findCurrentPlace(view : View){
@@ -275,25 +318,20 @@ class GoogleMaps : AppCompatActivity(), GoogleMap.OnMarkerClickListener,
 
     private fun getLocationPermission(){
         // Here, thisActivity is the current activity
-        if (ContextCompat.checkSelfPermission(this,
-                ACCESS_FINE_LOCATION)
-            != PackageManager.PERMISSION_GRANTED) {
+        if (ContextCompat.checkSelfPermission(this, ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
             // Permission is not granted
             // Should we show an explanation?
-            if (ActivityCompat.shouldShowRequestPermissionRationale(this,
-                    ACCESS_FINE_LOCATION)) {
+            if (ActivityCompat.shouldShowRequestPermissionRationale(this, ACCESS_FINE_LOCATION)) {
                 // Show an explanation to the user *asynchronously* -- don't block
                 // this thread waiting for the user's response! After the user
                 // sees the explanation, try again to request the permission.
             } else {
                 // No explanation needed, we can request the permission.
-                ActivityCompat.requestPermissions(this,
-                    arrayOf(ACCESS_FINE_LOCATION),
-                    MY_PERMISSIONS_REQUEST_READ_CONTACTS)
-
+                ActivityCompat.requestPermissions(this, arrayOf(ACCESS_FINE_LOCATION), MY_PERMISSIONS_REQUEST_READ_CONTACTS)
             }
         } else {
             // Permission has already been granted
+            return
         }
 
     }
@@ -305,11 +343,10 @@ class GoogleMaps : AppCompatActivity(), GoogleMap.OnMarkerClickListener,
                 if ((grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED)) {
                     mLocationPermissionGranted = true
                 } else {
-
+                    return
                 }
                 return
             }
-
             // Add other 'when' lines to check for other
             // permissions this app might request.
             else -> {
